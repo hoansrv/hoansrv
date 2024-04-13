@@ -1,0 +1,306 @@
+Cấu hình switch cisco
+I. Các cấu hình cơ bản trên switch:
+Vào chế độ config trên switch
+
+Switch#conf t
+Enter configuration commands, one per line.  End with CNTL/Z.
+Switch(config)#
+1. Cấu hình hostname
+Hostname
+sontest#conf t
+sontest(config)#hostname sontest1
+sontest1(config)#
+2. Cấu hình password truy cập switch
+#Set pass cho user admin 
+sontest1(config)#username admin password admin@1234
+sontest1(config)#enable password admin@456          # pass để vào mode config
+3. Cấu hình ip VLAN
+sontest1(config)#int vlan 1
+sontest1(config-if)#ip address 172.16.5.102 255.255.240.0
+4. Cấu hình default gateway
+sontest1(config)#ip default-gateway 172.16.10.1
+
+Switch#sh ip route      #sử dụng để kiểm tra
+Default gateway is 172.16.10.1
+
+Host               Gateway           Last Use    Total Uses  Interface
+ICMP redirect cache is empty
+5. Cấu hình Gi1/0/1 để làm port management
+sontest1(config)#int Gi1/0/1
+sontest1(config-if)#switchport mode access
+sontest1(config-if)#switchport access vlan 1
+line vty 0 4
+ login local
+
+II. Đồng bộ NTP
+1. Cài đặt ntp servr centos 7:
+timedatectl set-timezone Asia/Ho_Chi_Minh: tùy chỉnh thời gian trên server để làm ntp server
+yum install -y chrony: Cài đặt dịch vụ chrony
+systemctl enable --now chronyd: Lệnh để đồng bộ với dịch vụ chronyd tức thì.
+Kiểm tra trạng thái selinux bằng lệnh sestatus, hãy tắt selinux bằng cách chỉnh sửa file: vi /etc/selinux/config và sửa thành SELINUX=disabled
+vi cat /etc/chrony.conf # Chỉnh sửa allow server cần đồng bộ
+timedatectl #Kiểm tra đồng bộ NTP sync = yes
+2. Trên switch:
+ntp peer 172.16.5.105 source Vlan1
+
+sontest1(config)#clock timezone GMT 7 0
+sontest1#sh ntp associations
+
+      address         ref clock     st  when  poll reach  delay  offset    disp
+*~172.16.5.105     45.32.55.38       3    26   128  377     3.4   -1.41     1.0
+ * master (synced), # master (unsynced), + selected, - candidate, ~ configured
+
+
+sontest1#sh nt status
+Clock is synchronized, stratum 4, reference is 172.16.5.105
+nominal freq is 119.2092 Hz, actual freq is 119.2083 Hz, precision is 2**18
+reference time is E70B1D21.0A905743 (04:20:49.041 UTC Tue Nov 1 2022)
+clock offset is 6.9436 msec, root delay is 51.01 msec
+root dispersion is 45.32 msec, peer dispersion is 1.01 msec
+a
+
+III. Tạo, xóa vlan
+1. Tạo VLAN
+Trước khi tạo VLAN:
+a
+
+Tiến hành tạo VLAN 112:
+sontest1(config)#vlan 112
+sontest1(config-vlan)#name AAA
+a
+
+Gán các port vào cùng 1 VLAN:
+#Allow port vlan
+sontest1(config)#int range Gi1/0/2-5
+sontest1(config-if-range)#switchport mode access
+sontest1(config-if-range)#switchport access vlan 112
+a
+
+III. Backup
+1. Trên server linux dùng scp để tiến hành truyền file backup:
+Switch#copy startup-config scp:
+Address or name of remote host []? 172.16.7.200
+Destination username [Switch]? root
+Destination filename [switch-confg]? /backup/cf.txt
+Writing /backup/cf.txt
+Password:
+!
+3326 bytes copied in 8.968 secs (371 bytes/sec)
+a
+
+Kiểm tra file backup trên server: 172.16.7.200
+a
+
+2. Trên máy win sử dụng phần mềm: Tftpd64
+Thực hiện việc backup qua tftp:
+Switch#copy startup-config tftp:
+Address or name of remote host []? 172.16.5.103
+Destination filename [switch-confg]?
+!!
+3326 bytes copied in 1.233 secs (2697 bytes/sec))
+a
+
+Kiểm tra trên server 172.16.5.103:
+a
+
+IV. Auto backup
+1. Cài đặt tftp-server trên centos 7
+#!/bin/bash
+
+# Cài đặt TFTP Server trên CentOS 7
+yum install tftp tftp-server xinetd -y
+
+# Khởi tạo user dành riêng cho thư mục chứa dữ liệu phục vụ dịch vụ TFTP Server
+useradd --no-create-home -s /sbin/nologin tftp
+mkdir -p /tftpdata
+chmod 777 /tftpdata
+chown tftp:tftp -R /tftpdata
+
+# Cấu hình file dịch vụ TFTP
+cat << EOF > /etc/xinetd.d/tftp
+service tftp
+{
+        socket_type             = dgram
+        protocol                = udp
+        wait                    = yes
+        user                    = root
+        server                  = /usr/sbin/in.tftpd
+        server_args             = -c -v -u tftp -p -U 117 -s /tftpdata
+        disable                 = disable
+        per_source              = 11
+        cps                     = 100 2
+        flags                   = IPv4
+}
+EOF
+
+# Khởi động dịch vụ TFTP
+cat << EOF > /etc/systemd/system/tftp.service
+[Unit]
+Description=Tftp Server
+Requires=tftp.socket
+Documentation=man:in.tftpd
+[Service]
+ExecStart=/usr/sbin/in.tftpd -c -v -u tftp -p -U 117 -s /tftpdata
+StandardInput=socket
+[Install]
+Also=tftp.socket
+EOF
+
+systemctl daemon-reload
+
+systemctl start xinetd
+systemctl start tftp
+
+systemctl enable xinetd
+systemctl enable tftp
+
+systemctl status xinetd
+systemctl status tftp
+a
+
+2. AUTO BACKUP KRON - Server backup Linux
+Tạo danh sách backup với kron cấu hình các file backup sẽ được gửi về server 172.16.5.103
+sontest1(config)#kron policy-list bk_s
+sontest1(config-kron-policy)#cli show run | redirect tftp://172.16.7.56/config.txt
+sontest1(config-kron-policy)#exit
+a
+
+Đặt lịch backup cho policy-list:
+Switch(config)#kron occurrence bk_s at 13:53 Tue recurring
+Switch(config-kron-occurrence)#policy-list bk_s
+Switch(config-kron-occurrence)#exit
+
+sontest1#sh kron schedule
+Kron Occurrence Schedule
+backup_s inactive, will run again in 0 days 00:00:42 at 17:28 on Tue
+
+sontest1#sh kron schedule
+Kron Occurrence Schedule
+backup_s   active, will run again in 6 days 23:59:17 at 17:28 on Tue
+a
+
+a
+
+Kiểm tra:
+sontest1# sh running-config
+
+kron occurrence bk_s at 13:53 Tue recurring
+ policy-list bk_s
+!
+kron policy-list bk_s
+ cli show run | redirect tftp://172.16.7.56/config.txt
+a
+
+Restore: Yêu cầu máy chứa bản backup cài tftp.service
+Thực hiện lab: Xóa thử kron policy-list backup_s trong cấu hình đang chạy của switch, sau đó restore lại để kiểm tra:
+
+Kiểm tra cấu hình switch: Switch#sh running-config:
+
+a
+
+Tiến hành xóa: Switch(config)#no kron policy-list backup_s
+Kiểm tra lại:
+a
+
+Tải file backup:
+Switch#copy tftp: startup-config
+Address or name of remote host []? 172.16.7.56
+Source filename []? config.txt
+Destination filename [startup-config]?
+Accessing tftp://172.16.7.56/config.txt...
+Loading config.txt from 172.16.7.56 (via Vlan1): !
+[OK - 4994 bytes]
+[OK]
+4994 bytes copied in 8.364 secs (597 bytes/sec)
+Switch#
+Tiến hành Restore:
+Switch#copy startup-config running-config
+Destination filename [running-config]?
+
+5368 bytes copied in 1.451 secs (3700 bytes/sec)
+Kiểm tra lại kết quả sau khi restore:
+a
+
+3. BACKUP ARCHIVE - server windows
+Thực hiện backup trên máy chủ windows với phần mềm Xlight-FTP Server để máy windows là máy FTP Server:
+sontest1(config)#archive
+sontest1(config-archive)#path tftp://172.16.5.103/$h
+sontest1(config-archive)#time-period 2                #số phút giữa các bản backup
+sontest1(config-archive)#write-memory
+sontest1(config-archive)#end
+
+sontest1#sh archive
+The maximum archive configurations allowed is 14.
+The next archive file will be named tftp://172.16.5.103/sontest1-<timestamp>-2
+ Archive #  Name
+   1        tftp://172.16.5.103/sontest1Nov--2-04-31-40.479-0
+   2        tftp://172.16.5.103/sontest1Nov--2-04-33-43.308-1 <- Most Recent
+   3
+a
+
+Restore:
+Thực hiện tải file backup về switch:
+copy tftp://172.16.5.103/sontest1Nov--2-04-31-40.479-0 startup-config
+
+Tiến hành restore:
+Switch#copy startup-config running-config
+
+V. Qos limit băng thông
+1. Kích hoạt tính năng Qos:
+sontest1(config)#mls qos
+
+2. Tạo access-list cho phép mọi truy cập
+sontest1(config)#ip access-list extended ACL_1
+sontest1(config-ext-nacl)#permit ip any any
+3. Tạo class-map để phân loại các traffic
+sontest1(config)#class-map match-all CLASS_1
+sontest1(config-cmap)#match access-group name ACL_1
+4. Tạo policy:
+sontest1(config)#policy-map 200Mbps
+sontest1(config-pmap)#class CLASS_1
+sontest1(config-pmap-c)#police 200000000 1000000 exceed-action drop       #Tốc độ tối đa có thể đạt được là 200Mbps nếu quá sẽ bị drop k cho sử dụng.
+Trong đó: 200000000 là tốc độ tính bằng bit/s, 200000000 bit/s = 8Mbps 100000 là burst size tính bằng byte
+5. Gán Policy cho cổng mạng muốn hạn chế tốc độ.
+Ở đây, ta sử dụng nload để xem tốc độ truyền tải:
+
+`yum -y install nload`
+`nload p1p1` : port để truyền tải
+Trước khi gán policy:
+Trên server 1 ip: 192.168.0.10
+Trên server 2 ip: 192.168.0.113
+Tốc độ truyền và nhận dữ liệu
+
+a
+
+Trên ip 192.168.0.10 đang đóng vai trò server nhận kết nối có Incoming là 938 mbit/s
+a
+
+Trên server có ip 192.168.0.113 đang đóng vai trò client truyền dữ liệu có Outgoing là 937 Mbit/s
+a
+
+GigabitEthernet0/2 service-policy input POLICY_100Mbps Trong ví dụ này input là chiều đi vào cổng mạng (Client upload dữ liệu lên mạng)
+
+Trường hợp ngược lại ouput là chiều đi ra khỏi cổng mạng (Client download dữ liệu về máy) GigabitEthernet0/2 service-policy output POLICY_100Mbps
+
+sử dụng nload để xem tốc độ truyền tải yum -y install nload nload em2 : port để truyền tải
+
+Sau khi tạo Policy, ACL, Class-map:
+
+a
+
+Cấu hình policy cho interface:
+a
+
+Kiểm tra lại tốc độ truyền và nhận dữ liệu:
+a
+
+a
+
+a
+
+Xóa cấu hình sw
+Switch#delete flash:vlan.dat
+
+Switch#erase startup-config
+
+Switch#reload
